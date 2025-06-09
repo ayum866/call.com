@@ -1,0 +1,267 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Agora Voice Call</title>
+    <!-- Load Tailwind CSS from CDN for easy styling -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        /* Apply Inter font family */
+        body {
+            font-family: 'Inter', sans-serif;
+        }
+    </style>
+</head>
+<body class="bg-gradient-to-br from-blue-100 to-purple-100 min-h-screen flex items-center justify-center p-4">
+    <div class="bg-white p-8 rounded-xl shadow-lg w-full max-w-md">
+        <h1 class="text-3xl font-bold text-center text-gray-800 mb-6">Agora Voice Call</h1>
+
+        <!-- Input for Channel Name -->
+        <div class="mb-4">
+            <label for="channel" class="block text-gray-700 text-sm font-semibold mb-2">Channel Name:</label>
+            <input type="text" id="channel" value="my-voice-channel" placeholder="Enter channel name"
+                   class="shadow-sm appearance-none border rounded-lg w-full py-2 px-3 text-gray-700 leading-tight focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent">
+        </div>
+
+        <!-- Action Buttons -->
+        <div class="flex flex-col space-y-4">
+            <button id="join" class="bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 px-4 rounded-lg shadow-md focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-opacity-75 transition duration-300 ease-in-out transform hover:scale-105">
+                Join Call
+            </button>
+            <button id="leave" class="bg-red-500 hover:bg-red-600 text-white font-bold py-3 px-4 rounded-lg shadow-md focus:outline-none focus:ring-2 focus:ring-red-400 focus:ring-opacity-75 transition duration-300 ease-in-out transform hover:scale-105" disabled>
+                Leave Call
+            </button>
+        </div>
+
+        <!-- Status and Message Display -->
+        <div class="mt-6 p-4 bg-gray-50 rounded-lg border border-gray-200">
+            <p class="text-gray-700 text-sm font-semibold mb-2">Status:</p>
+            <p id="status" class="text-sm text-gray-600">Disconnected</p>
+            <p class="text-gray-700 text-sm font-semibold mt-4 mb-2">Messages:</p>
+            <div id="messages" class="text-sm text-gray-600 h-24 overflow-y-auto bg-white p-2 rounded-md border border-gray-300">
+                <!-- Messages will appear here -->
+            </div>
+        </div>
+    </div>
+
+    <!-- Agora Web SDK -->
+    <script src="https://download.agora.io/sdk/release/AgoraRTC_N.js"></script>
+
+    <script>
+        // Set up your Agora App ID here.
+        // You can get this from your Agora Console: https://console.agora.io/
+        const APP_ID = 'ee57f425743842bcbdb789e1b90775f7'; // Your Agora App ID has been updated!
+
+        // Initialize Agora client outside the join/leave functions
+        let agoraClient;
+        let localAudioTrack;
+        let remoteUsers = {}; // To store remote users and their audio tracks
+        let uid = null; // Store UID once obtained from Agora
+
+        // UI Elements
+        const channelInput = document.getElementById('channel');
+        const joinButton = document.getElementById('join');
+        const leaveButton = document.getElementById('leave');
+        const statusDisplay = document.getElementById('status');
+        const messagesDisplay = document.getElementById('messages');
+
+        // Function to append messages to the display area
+        function appendMessage(message, type = 'info') {
+            const messageElement = document.createElement('p');
+            messageElement.textContent = message;
+            if (type === 'error') {
+                messageElement.classList.add('text-red-600', 'font-medium');
+            } else if (type === 'success') {
+                messageElement.classList.add('text-green-600', 'font-medium');
+            } else {
+                messageElement.classList.add('text-gray-700');
+            }
+            messagesDisplay.appendChild(messageElement);
+            messagesDisplay.scrollTop = messagesDisplay.scrollHeight; // Scroll to bottom
+        }
+
+        // Function to fetch a token from your server
+        // IMPORTANT: Replace 'YOUR_TOKEN_SERVER_ENDPOINT' with your actual server endpoint
+        async function fetchAgoraToken(channelName, uid) {
+            try {
+                appendMessage(`Fetching token for channel: ${channelName}, UID: ${uid || 'random'}...`);
+                // In a real application, you would make an API call to your server
+                // Example: const response = await fetch(`YOUR_TOKEN_SERVER_ENDPOINT/rtc/${channelName}/publisher/uid/${uid}`);
+                // const data = await response.json();
+                // return data.token;
+
+                // For demonstration purposes *only*, using the provided temporary token.
+                // NEVER use hardcoded tokens in production!
+                // This token is temporary and will expire.
+                const testToken = '007eJxTYAjZLe8zRcUqzzaNUflkYLyPj+TfaWY7jrB8MXmx1e/P7g4FhtRUU/M0EyNTcxNjCxOjpOSklCRzC8tUwyRLA3Nz0zTzm+FuGQ2BjAztPGYsjAwQCOKzMCQmJacwMAAAsIUdMQ=='; // Your previously provided token
+
+                if (testToken) {
+                    appendMessage("Using a hardcoded (TEST) token. Please set up a token server for production!", "error");
+                    return testToken;
+                } else {
+                     appendMessage("No test token provided and no server endpoint defined. Please set up a token server or provide a temporary token.", "error");
+                     throw new Error("No token source configured.");
+                }
+
+            } catch (error) {
+                appendMessage(`Error fetching token: ${error.message}`, 'error');
+                throw error; // Re-throw to propagate the error
+            }
+        }
+
+        // Initialize Agora Client
+        function initializeAgoraClient() {
+            try {
+                agoraClient = AgoraRTC.createClient({ mode: "rtc", codec: "vp8" }); // "rtc" for voice/video calls
+                appendMessage('Agora client initialized.');
+            } catch (error) {
+                appendMessage(`Error initializing Agora client: ${error.message}`, 'error');
+                return null;
+            }
+
+            // Event Listeners for Agora Client
+            agoraClient.on("user-published", async (user, mediaType) => {
+                // When a remote user publishes a stream, subscribe to it
+                await agoraClient.subscribe(user, mediaType);
+                if (mediaType === "audio") {
+                    // Get the remote audio track and play it
+                    const remoteAudioTrack = user.audioTrack;
+                    remoteAudioTrack.play();
+                    remoteUsers[user.uid] = user; // Store user for later reference
+                    appendMessage(`Remote user ${user.uid} published audio.`);
+                }
+            });
+
+            agoraClient.on("user-unpublished", (user) => {
+                // When a remote user unpublishes, stop playing their audio
+                if (remoteUsers[user.uid] && remoteUsers[user.uid].audioTrack) {
+                    remoteUsers[user.uid].audioTrack.stop();
+                }
+                delete remoteUsers[user.uid];
+                appendMessage(`Remote user ${user.uid} unpublished.`);
+            });
+
+            agoraClient.on("user-joined", (user) => {
+                appendMessage(`User ${user.uid} joined the channel.`);
+            });
+
+            agoraClient.on("user-left", (user) => {
+                appendMessage(`User ${user.uid} left the channel.`);
+                if (remoteUsers[user.uid] && remoteUsers[user.uid].audioTrack) {
+                     remoteUsers[user.uid].audioTrack.stop();
+                }
+                delete remoteUsers[user.uid];
+            });
+
+            agoraClient.on("client-role-changed", (curr, prev) => {
+                appendMessage(`Client role changed from ${prev} to ${curr}.`);
+            });
+
+            agoraClient.on("token-privilege-will-expire", async () => {
+                appendMessage("Agora token will expire soon. Renewing token...", 'info');
+                // Re-fetch a new token from your server
+                try {
+                    const newToken = await fetchAgoraToken(channelInput.value, uid);
+                    await agoraClient.renewToken(newToken);
+                    appendMessage("Agora token renewed successfully.", 'success');
+                } catch (error) {
+                    appendMessage(`Failed to renew token: ${error.message}`, 'error');
+                }
+            });
+
+            return agoraClient;
+        }
+
+        // Join Call Function
+        joinButton.onclick = async () => {
+            const channelName = channelInput.value;
+            if (!channelName) {
+                appendMessage('Please enter a channel name.', 'error');
+                return;
+            }
+            if (!APP_ID || APP_ID === 'YOUR_AGORA_APP_ID') {
+                appendMessage('Please replace "YOUR_AGORA_APP_ID" with your actual Agora App ID in the JavaScript code.', 'error');
+                return;
+            }
+
+            // Ensure Agora client is initialized
+            if (!agoraClient) {
+                agoraClient = initializeAgoraClient();
+            }
+
+            joinButton.disabled = true;
+            statusDisplay.textContent = 'Connecting...';
+            appendMessage(`Attempting to join channel: ${channelName}`);
+
+            try {
+                // 1. Fetch the token from your server (or use a temporary one for testing)
+                const token = await fetchAgoraToken(channelName, null); // Pass null to let Agora assign a UID
+
+                // 2. Join the channel using the fetched token and let Agora generate UID
+                uid = await agoraClient.join(APP_ID, channelName, token, null); // Pass null for UID to let Agora assign
+                statusDisplay.textContent = `Connected as UID: ${uid}`;
+                appendMessage(`Successfully joined channel: ${channelName} with UID: ${uid}`, 'success');
+
+                // 3. Create and publish local audio track
+                localAudioTrack = await AgoraRTC.createMicrophoneAudioTrack();
+                await agoraClient.publish(localAudioTrack);
+                appendMessage('Local microphone audio published.', 'success');
+
+                leaveButton.disabled = false;
+            } catch (error) {
+                appendMessage(`Failed to join channel: ${error.message}`, 'error');
+                statusDisplay.textContent = 'Disconnected';
+                joinButton.disabled = false;
+                leaveButton.disabled = true;
+            }
+        };
+
+        // Leave Call Function
+        leaveButton.onclick = async () => {
+            if (!agoraClient) {
+                appendMessage('Not connected to a channel.', 'info');
+                return;
+            }
+
+            leaveButton.disabled = true;
+            statusDisplay.textContent = 'Disconnecting...';
+            appendMessage('Attempting to leave call.');
+
+            try {
+                // Stop and close the local audio track
+                if (localAudioTrack) {
+                    localAudioTrack.stop();
+                    localAudioTrack.close();
+                    localAudioTrack = null;
+                }
+
+                // Unpublish all local tracks and leave the channel
+                await agoraClient.unpublish();
+                await agoraClient.leave();
+
+                // Stop remote audio tracks
+                for (const remoteUid in remoteUsers) {
+                    if (remoteUsers[remoteUid].audioTrack) {
+                        remoteUsers[remoteUid].audioTrack.stop();
+                    }
+                }
+                remoteUsers = {}; // Clear remote users
+                uid = null; // Clear local UID
+
+                statusDisplay.textContent = 'Disconnected';
+                appendMessage('Successfully left the call.', 'success');
+                joinButton.disabled = false;
+            } catch (error) {
+                appendMessage(`Failed to leave channel: ${error.message}`, 'error');
+                statusDisplay.textContent = 'Error during disconnection';
+                leaveButton.disabled = false; // Re-enable if disconnection failed
+            }
+        };
+
+        // Initialize client on page load
+        initializeAgoraClient();
+
+    </script>
+</body>
+</html>
